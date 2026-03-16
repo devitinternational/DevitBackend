@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  student
+  admin
+  instructor
+}
+
+enum EnrollmentStatus {
+  pending
+  active
+  completed
+  dropped
+}
+
+model User {
+  id          String       @id @default(cuid())
+  name        String
+  email       String       @unique
+  role        Role         @default(student)
+  enrollments Enrollment[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("users")
+}
+
+model Domain {
+  id          String       @id @default(cuid())
+  name        String       @unique  // e.g. "Web Development", "Data Science"
+  slug        String       @unique  // e.g. "web-dev", "data-science"
+  description String?
+  enrollments Enrollment[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("domains")
+}
+
+model Enrollment {
+  id          String           @id @default(cuid())
+  userId      String
+  domainId    String
+  status      EnrollmentStatus @default(pending)
+  enrolledAt  DateTime         @default(now())
+  completedAt DateTime?
+  updatedAt   DateTime         @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domainId]) // a student can't enroll in the same domain twice
+  @@map("enrollments")
+}
