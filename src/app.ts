@@ -10,6 +10,7 @@ import domainRoutes from "./routes/domain.routes";
 import sectionRoutes from "./routes/section.routes";
 import taskRoutes from "./routes/task.routes";
 import lessonRoutes from "./routes/lesson.routes";
+import paymentRoutes from "./routes/payment.routes";
 
 export const createApp = (): Express => {
   const app = express();
@@ -55,6 +56,7 @@ export const createApp = (): Express => {
 
   // domain router last — handles /, /:id, /:id/publish
   app.use("/api/domains", domainRoutes);
+  app.use("/api/payments", paymentRoutes);
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });

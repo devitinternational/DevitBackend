@@ -225,6 +225,7 @@ model Enrollment {
   domain       Domain        @relation(fields: [domainId], references: [id])
   submissions  Submission[]
   certificate  Certificate?
+  invoice      Invoice?
 
   @@unique([userId, domainId])
 }
@@ -316,4 +317,25 @@ model Income {
   updatedAt   DateTime @updatedAt
 
   createdBy User @relation("UserIncomes", fields: [createdById], references: [id])
+}
+
+model Invoice {
+  id                String   @id @default(cuid())
+  invoiceNo         String   @unique
+  enrollmentId      String   @unique
+  buyerName         String
+  buyerEmail        String
+  courseTitle       String
+  amountINR         Decimal  @db.Decimal(10, 2)
+  gstPercent        Int      @default(18)
+  gstAmount         Decimal  @db.Decimal(10, 2)
+  total             Decimal  @db.Decimal(10, 2)
+  pdfUrl            String?
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  issuedAt          DateTime @default(now())
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@map("invoices")
 }

@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+import { env } from "../config/env.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -24,30 +26,22 @@ export async function verifyToken(
   const token = authHeader.split(" ")[1];
 
   try {
-    // Ask the dashboard to validate the session token
-    const dashboardUrl = process.env.DASHBOARD_URL ?? "http://localhost:3000";
-    const response = await fetch(`${dashboardUrl}/api/auth/verify`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    const payload = jwt.verify(token, env.authSecret) as any;
 
-    if (!response.ok) {
-      res.status(401).json({ error: "Invalid or expired token" });
+    if (!payload?.id || !payload?.email) {
+      res.status(401).json({ error: "Invalid token payload" });
       return;
     }
 
-    const user = await response.json();
-
     req.user = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name,
+      id: payload.id,
+      email: payload.email,
+      role: payload.role ?? "LEARNER",
+      name: payload.name,
     };
 
     next();
   } catch (err) {
-    res.status(401).json({ error: "Auth service unreachable" });
+    res.status(401).json({ error: "Invalid or expired token" });
   }
 }
