@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from "../middlewares/auth-middleware.js";
 import { prisma } from "../lib/prisma.js";
 import { razorpay } from "../lib/razorpay.js";
 import { generateInvoicePdf } from "../lib/invoice.js";
-import { uploadBuffer } from "../lib/storage.js";
+import { getPresignedDownloadUrl, uploadBuffer } from "../lib/storage.js";
 import { env } from "../config/env.js";
 
 // POST /api/payments/order
@@ -51,7 +51,9 @@ export async function createOrder(req: AuthenticatedRequest, res: Response) {
         durationMonths,
         paymentStatus: domain.isFree ? "PAID" : "PENDING",
         startDate: new Date(),
-        endDate: new Date(Date.now() + durationMonths * 30 * 24 * 60 * 60 * 1000),
+        endDate: new Date(
+          Date.now() + durationMonths * 30 * 24 * 60 * 60 * 1000,
+        ),
       },
     });
 
@@ -89,7 +91,9 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
       .digest("hex");
 
     if (expectedSig !== razorpay_signature) {
-      res.status(400).json({ success: false, message: "Invalid payment signature" });
+      res
+        .status(400)
+        .json({ success: false, message: "Invalid payment signature" });
       return;
     }
 
@@ -157,9 +161,14 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
     ]);
 
     res.json({ success: true, data: { invoiceNo, pdfUrl } });
-  } catch (err) {
-    console.error("verifyPayment error:", err);
-    res.status(500).json({ success: false, message: "Payment verification failed" });
+  } catch (err: any) {
+    if (err.code === "P2002") {
+      res
+        .status(409)
+        .json({ success: false, message: "Payment already verified" });
+      return;
+    }
+    throw err;
   }
 }
 
@@ -196,7 +205,9 @@ export async function handleWebhook(req: Request, res: Response) {
     if (event.event === "payment.failed") {
       const notes = event.payload?.payment?.entity?.notes;
       if (!notes?.userId || !notes.domainId) {
-        res.status(400).json({ error: "Missing payment notes in webhook payload" });
+        res
+          .status(400)
+          .json({ error: "Missing payment notes in webhook payload" });
         return;
       }
 
@@ -214,5 +225,36 @@ export async function handleWebhook(req: Request, res: Response) {
   } catch (err) {
     console.error("webhook error:", err);
     res.status(500).json({ error: "Webhook processing failed" });
+  }
+}
+
+export async function getInvoice(req: AuthenticatedRequest, res: Response) {
+  try {
+    const enrollmentId = req.params["enrollmentId"] as string; // fix 1 — cast to string
+
+    const invoice = await prisma.invoice.findUnique({
+      where: { enrollmentId },
+      include: { enrollment: true }, // fix 2 — need to include enrollment
+    });
+
+    if (!invoice) {
+      res.status(404).json({ success: false, message: "Invoice not found" });
+      return;
+    }
+
+    if (
+      invoice.enrollment.userId !== req.user!.id &&
+      req.user!.role !== "ADMIN"
+    ) {
+      res.status(403).json({ success: false, message: "Forbidden" });
+      return;
+    }
+
+    const key = `invoices/${invoice.invoiceNo}.pdf`;
+    const url = await getPresignedDownloadUrl(key, 3600);
+
+    res.json({ success: true, data: { url } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to get invoice" });
   }
 }
