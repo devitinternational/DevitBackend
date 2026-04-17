@@ -1,7 +1,35 @@
-import { Response } from "express";
+import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { generateSlug } from "../lib/utils.js";
 import { AuthenticatedRequest } from "../middlewares/auth-middleware.js";
+
+export const listPublicDomains = async (_req: Request, res: Response) => {
+  try {
+    const domains = await prisma.domain.findMany({
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        iconUrl: true,
+        bannerUrl: true,
+        description: true,
+        published: true,
+        isFeatured: true,
+        priceINR: true,
+        priceMYR: true,
+        isFree: true,
+        durationOptions: true,
+        createdAt: true,
+        _count: { select: { sections: true, tasks: true, enrollments: true } },
+        creator: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ success: true, data: domains });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to fetch domains" });
+  }
+};
 
 export const listDomains = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -58,6 +86,7 @@ export const createDomain = async (
       priceMYR,
       isFree,
       durationOptions,
+      isFeatured,
     } = req.body;
 
     if (!title) {
@@ -74,6 +103,7 @@ export const createDomain = async (
         description,
         iconUrl,
         bannerUrl,
+        isFeatured: isFeatured ?? false,
         priceINR: priceINR ? parseFloat(priceINR) : null,
         priceMYR: priceMYR ? parseFloat(priceMYR) : null,
         isFree: isFree ?? false,
