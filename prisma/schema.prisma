@@ -30,6 +30,7 @@ model User {
   certificates Certificate[]
   expenses    Expense[]    @relation("UserExpenses")
   incomes     Income[]     @relation("UserIncomes")
+  lessonProgress LessonProgress[]
 }
 
 enum Role {
@@ -226,6 +227,7 @@ model Enrollment {
   submissions  Submission[]
   certificate  Certificate?
   invoice      Invoice?
+  lessonProgress LessonProgress[]
 
   @@unique([userId, domainId])
 }
@@ -338,4 +340,17 @@ model Invoice {
   enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
 
   @@map("invoices")
+}
+
+model LessonProgress {
+  id           String   @id @default(cuid())
+  userId       String
+  lessonId     String
+  enrollmentId String
+  completedAt  DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId, enrollmentId])
 }
