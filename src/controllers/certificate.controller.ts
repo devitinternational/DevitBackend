@@ -134,12 +134,13 @@ export async function tryCompleteCourse(enrollmentId: string): Promise<void> {
       },
       submissions: { select: { taskId: true, status: true } },
       user: { select: { name: true, email: true } },
-      certificate: { select: { id: true } },
+      certificate: { select: { id: true, pdfUrl: true } },
     },
   });
 
   if (!enrollment) return;
-  if (enrollment.certificate) return; // already has a certificate row
+  // Only bail if PDF already generated — null pdfUrl means retry needed
+  if (enrollment.certificate?.pdfUrl) return;
 
   const requiredTaskIds = enrollment.domain.tasks.map((t) => t.id);
   const passedTaskIds = new Set(
@@ -174,8 +175,11 @@ export async function tryCompleteCourse(enrollmentId: string): Promise<void> {
     console.error(`tryCompleteCourse: PDF generation failed for ${enrollmentId}:`, err);
   }
 
-  await prisma.certificate.create({
-    data: {
+  // Upsert — handles case where row exists with null pdfUrl (previous failed generation)
+  await prisma.certificate.upsert({
+    where: { enrollmentId },
+    update: { pdfUrl: pdfUrl ?? null, verificationHash },
+    create: {
       enrollmentId,
       userId: enrollment.userId,
       verificationHash,
