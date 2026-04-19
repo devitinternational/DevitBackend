@@ -1,5 +1,5 @@
-// src/middlewares/auth-middleware.ts
 import { Request, Response, NextFunction } from "express";
+import { jwtVerify } from "jose";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -9,6 +9,12 @@ export interface AuthenticatedRequest extends Request {
     name?: string;
   };
 }
+
+const getSecret = () => {
+  const secret = process.env.AUTH_SECRET;
+  if (!secret) throw new Error("AUTH_SECRET is not set");
+  return new TextEncoder().encode(secret);
+};
 
 export async function verifyToken(
   req: AuthenticatedRequest,
@@ -25,26 +31,24 @@ export async function verifyToken(
   const token = authHeader.split(" ")[1];
 
   try {
-    const dashboardUrl = process.env.DASHBOARD_URL ?? "http://localhost:3000";
-    const response = await fetch(`${dashboardUrl}/api/auth/verify`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const { payload } = await jwtVerify(token, getSecret(), {
+      algorithms: ["HS256"],
     });
 
-    if (!response.ok) {
-      res.status(401).json({ error: "Invalid or expired token" });
+    if (!payload.id || !payload.email || !payload.role) {
+      res.status(401).json({ error: "Malformed token payload" });
       return;
     }
 
-    const user = await response.json();
     req.user = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name,
+      id: payload.id as string,
+      email: payload.email as string,
+      role: payload.role as string,
+      name: payload.name as string | undefined,
     };
 
     next();
   } catch (err) {
-    res.status(401).json({ error: "Auth service unreachable" });
+    res.status(401).json({ error: "Invalid or expired token" });
   }
 }
