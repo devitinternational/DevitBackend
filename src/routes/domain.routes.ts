@@ -3,6 +3,7 @@ import { verifyToken } from "../middlewares/auth-middleware.js";
 import { requireRole } from "../middlewares/require-role.js";
 import {
   listDomains,
+  listPublicDomains,
   createDomain,
   getDomain,
   updateDomain,
@@ -11,6 +12,9 @@ import {
 } from "../controllers/domain.controller.js";
 
 const router = Router({ mergeParams: true });
+
+// Public domains list
+router.get("/public", listPublicDomains);
 
 // Publish toggle — must be before /:id
 router.patch(
