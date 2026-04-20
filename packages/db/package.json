@@ -1,0 +1,32 @@
+{
+  "name": "@devitinternational/db",
+  "version": "0.1.0",
+  "description": "Shared Prisma client for Devit services",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "prisma/generated"
+  ],
+  "scripts": {
+    "generate": "prisma generate --schema=./prisma/schema.prisma",
+    "build": "npm run generate && npx tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@prisma/client": "^7.5.0"
+  },
+  "devDependencies": {
+    "prisma": "^7.5.0",
+    "@prisma/client": "^7.5.0",
+    "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/devitinternational/DevitBackend.git",
+    "directory": "packages/db"
+  }
+}
