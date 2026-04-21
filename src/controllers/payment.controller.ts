@@ -4,6 +4,8 @@ import { AuthenticatedRequest } from "../middlewares/auth-middleware.js";
 import { prisma } from "../lib/prisma.js";
 import { razorpay } from "../lib/razorpay.js";
 import { generateInvoicePdf } from "../lib/invoice.js";
+import { sendInvoiceEmail } from "../lib/invoice-email.js";
+import { isMailerConfigured } from "../lib/mailer.js";
 import { getPresignedDownloadUrl, uploadBuffer } from "../lib/storage.js";
 import { env } from "../config/env.js";
 
@@ -119,17 +121,21 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
     const gstPercent = 18;
     const gstAmount = parseFloat(((priceINR * gstPercent) / 100).toFixed(2));
     const total = priceINR + gstAmount;
+    const issuedAt = new Date();
 
     // 4. Generate PDF
     const pdfBuffer = await generateInvoicePdf({
       invoiceNo,
-      issuedAt: new Date(),
+      issuedAt,
       buyerName: enrollment.user.name ?? "Learner",
       buyerEmail: enrollment.user.email,
       courseTitle: enrollment.domain.title,
       durationMonths: enrollment.durationMonths,
       amountINR: priceINR,
       gst: gstPercent,
+      paymentId: razorpay_payment_id,
+      orderId: razorpay_order_id,
+      supportEmail: env.supportEmail,
     });
 
     // 5. Upload PDF to R2
@@ -140,7 +146,7 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
     await prisma.$transaction([
       prisma.enrollment.update({
         where: { id: enrollmentId },
-        data: { paymentStatus: "PAID" },
+        data: { paymentStatus: "PAID", paymentRef: razorpay_payment_id },
       }),
       prisma.invoice.create({
         data: {
@@ -156,11 +162,37 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
           pdfUrl,
           razorpayOrderId: razorpay_order_id,
           razorpayPaymentId: razorpay_payment_id,
+          issuedAt,
         },
       }),
     ]);
 
-    res.json({ success: true, data: { invoiceNo, pdfUrl } });
+    let emailSent = false;
+
+    if (isMailerConfigured()) {
+      const courseLink = `${env.learningPlatformUrl.replace(/\/$/, "")}/dashboard`;
+
+      try {
+        await sendInvoiceEmail({
+          customerName: enrollment.user.name ?? "Learner",
+          customerEmail: enrollment.user.email,
+          courseName: enrollment.domain.title,
+          courseLink,
+          amount: total,
+          paymentId: razorpay_payment_id,
+          invoiceNo,
+          invoiceUrl: pdfUrl,
+          pdfBuffer,
+        });
+        emailSent = true;
+      } catch (emailErr) {
+        console.error("invoice email error:", emailErr);
+      }
+    } else {
+      console.warn("Mailer not configured. Skipping invoice email delivery.");
+    }
+
+    res.json({ success: true, data: { invoiceNo, pdfUrl, emailSent } });
   } catch (err: any) {
     if (err.code === "P2002") {
       res
