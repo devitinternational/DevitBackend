@@ -30,6 +30,7 @@ model User {
   certificates Certificate[]
   expenses    Expense[]    @relation("UserExpenses")
   incomes     Income[]     @relation("UserIncomes")
+  createdInvoices Invoice[] @relation("CreatedInvoices")
   lessonProgress LessonProgress[]
 }
 
@@ -226,7 +227,7 @@ model Enrollment {
   domain       Domain        @relation(fields: [domainId], references: [id])
   submissions  Submission[]
   certificate  Certificate?
-  invoice      Invoice?
+  invoices     Invoice[]
   lessonProgress LessonProgress[]
 
   @@unique([userId, domainId])
@@ -324,10 +325,18 @@ model Income {
 model Invoice {
   id                String   @id @default(cuid())
   invoiceNo         String   @unique
-  enrollmentId      String   @unique
+  type              InvoiceType   @default(STUDENT)
+  status            InvoiceStatus @default(PAID)
+  enrollmentId      String?  @unique
   buyerName         String
   buyerEmail        String
   courseTitle       String
+  projectName       String?
+  domain            String?
+  notes             String?  @db.Text
+  emailTemplate     String?  @db.Text
+  emailSubject      String?
+  recipients        String[] @default([])
   amountINR         Decimal  @db.Decimal(10, 2)
   gstPercent        Int      @default(18)
   gstAmount         Decimal  @db.Decimal(10, 2)
@@ -335,11 +344,48 @@ model Invoice {
   pdfUrl            String?
   razorpayOrderId   String?
   razorpayPaymentId String?
+  dueDate           DateTime?
   issuedAt          DateTime @default(now())
+  sentAt            DateTime?
+  paidAt            DateTime?
+  failedAt          DateTime?
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
 
-  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
+  createdBy  User?       @relation("CreatedInvoices", fields: [createdById], references: [id])
+  items      InvoiceItem[]
 
   @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  name        String
+  description String?  @db.Text
+  quantity    Decimal  @db.Decimal(10, 2)
+  price       Decimal  @db.Decimal(10, 2)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, sortOrder])
+}
+
+enum InvoiceType {
+  STUDENT
+  PROJECT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  FAILED
 }
 
 model LessonProgress {
