@@ -30,7 +30,9 @@ export async function getActiveEnrollment(
         submissions: {
           select: { status: true },
         },
-        invoice: {
+        invoices: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
           select: { invoiceNo: true, pdfUrl: true },
         },
         certificate: {
@@ -65,7 +67,7 @@ export async function getActiveEnrollment(
         passedTasks,
         totalTasks,
         domain: enrollment.domain,
-        invoice: enrollment.invoice,
+        invoice: enrollment.invoices[0] ?? null,
         certificate: enrollment.certificate ?? null,
       },
     });
