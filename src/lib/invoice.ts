@@ -9,6 +9,35 @@ import {
   renderToBuffer,
 } from "@react-pdf/renderer";
 
+export interface InvoicePdfItem {
+  name: string;
+  description?: string | null;
+  quantity: number;
+  price: number;
+}
+
+export interface InvoicePdfData {
+  invoiceNo: string;
+  type: "student" | "project";
+  status: "draft" | "sent" | "paid" | "failed";
+  issuedAt: Date;
+  dueDate?: Date | null;
+  buyerName: string;
+  buyerEmail: string;
+  courseTitle: string;
+  projectName?: string | null;
+  domain?: string | null;
+  subtotal: number;
+  gstPercent?: number;
+  gstAmount?: number;
+  total: number;
+  items: InvoicePdfItem[];
+  notes?: string | null;
+  paymentId?: string | null;
+  orderId?: string | null;
+  supportEmail?: string;
+}
+
 const styles = StyleSheet.create({
   page: {
     padding: 40,
@@ -38,7 +67,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   invoiceTitle: { fontSize: 28, color: "#0a0a0a", fontWeight: "bold" },
-  invoiceSubtitle: { fontSize: 10, color: "#3a3320", marginTop: 6, textAlign: "right" },
+  invoiceSubtitle: {
+    fontSize: 10,
+    color: "#3a3320",
+    marginTop: 6,
+    textAlign: "right",
+  },
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 18,
@@ -60,7 +94,12 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   value: { fontSize: 11, color: "#0a0a0a", marginBottom: 10 },
-  companyName: { fontSize: 14, color: "#0a0a0a", fontWeight: "bold", marginBottom: 4 },
+  companyName: {
+    fontSize: 14,
+    color: "#0a0a0a",
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
   muted: { fontSize: 10, color: "#6a6a64", lineHeight: 1.5 },
   statusPill: {
     backgroundColor: "#fff4cc",
@@ -99,14 +138,14 @@ const styles = StyleSheet.create({
   },
   tableCell: { fontSize: 11, color: "#0a0a0a" },
   tableCellWide: { width: "52%" },
-  tableCellMid: { width: "24%", textAlign: "center" },
-  tableCellEnd: { width: "24%", textAlign: "right" },
+  tableCellMid: { width: "18%", textAlign: "center" },
+  tableCellEnd: { width: "20%", textAlign: "right" },
   totalsWrap: {
     marginTop: 18,
     alignItems: "flex-end",
   },
   totalsCard: {
-    width: 240,
+    width: 260,
     backgroundColor: "#fff9e6",
     borderRadius: 14,
     padding: 16,
@@ -135,29 +174,30 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 8, color: "#6a6a64", textAlign: "center" },
 });
 
-export interface InvoiceData {
-  invoiceNo: string;
-  issuedAt: Date;
-  buyerName: string;
-  buyerEmail: string;
-  courseTitle: string;
-  durationMonths: number;
-  amountINR: number;
-  gst: number;
-  paymentId?: string;
-  orderId?: string;
-  supportEmail?: string;
+function formatDate(value: Date) {
+  return value.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function formatMoney(value: number) {
+  return `Rs. ${value.toFixed(2)}`;
 }
 
 function InvoiceDocument({
   data,
 }: {
-  data: InvoiceData;
+  data: InvoicePdfData;
 }): React.ReactElement<DocumentProps> {
-  const subtotal = data.amountINR;
-  const gstAmount = parseFloat(((subtotal * data.gst) / 100).toFixed(2));
-  const total = subtotal + gstAmount;
   const supportEmail = data.supportEmail ?? "hello@devit.in";
+  const isProject = data.type === "project";
+  const title = isProject ? "Project Invoice" : "Payment Invoice";
+  const subtitle = isProject
+    ? "Official invoice for project and service billing"
+    : "Official payment receipt for your DevIt enrollment";
+  const referenceName = data.projectName?.trim() || data.courseTitle.trim();
 
   return React.createElement(
     Document,
@@ -184,13 +224,9 @@ function InvoiceDocument({
           React.createElement(
             View,
             { style: { alignItems: "flex-end" } },
-            React.createElement(Text, { style: styles.invoiceEyebrow }, "Payment Invoice"),
+            React.createElement(Text, { style: styles.invoiceEyebrow }, title),
             React.createElement(Text, { style: styles.invoiceTitle }, "INVOICE"),
-            React.createElement(
-              Text,
-              { style: styles.invoiceSubtitle },
-              "Official payment receipt for your DevIt enrollment",
-            ),
+            React.createElement(Text, { style: styles.invoiceSubtitle }, subtitle),
           ),
         ),
       ),
@@ -207,22 +243,14 @@ function InvoiceDocument({
             React.createElement(Text, { style: styles.label }, "Invoice Number"),
             React.createElement(Text, { style: styles.value }, data.invoiceNo),
             React.createElement(Text, { style: styles.label }, "Issued On"),
-            React.createElement(
-              Text,
-              { style: styles.value },
-              data.issuedAt.toLocaleDateString("en-IN", {
-                day: "2-digit",
-                month: "short",
-                year: "numeric",
-              }),
-            ),
-            data.paymentId
-              ? React.createElement(Text, { style: styles.label }, "Payment Reference")
+            React.createElement(Text, { style: styles.value }, formatDate(data.issuedAt)),
+            data.dueDate
+              ? React.createElement(Text, { style: styles.label }, "Due Date")
               : null,
-            data.paymentId
-              ? React.createElement(Text, { style: styles.value }, data.paymentId)
+            data.dueDate
+              ? React.createElement(Text, { style: styles.value }, formatDate(data.dueDate))
               : null,
-            React.createElement(Text, { style: styles.statusPill }, "Payment Confirmed"),
+            React.createElement(Text, { style: styles.statusPill }, data.status),
           ),
           React.createElement(
             View,
@@ -230,16 +258,25 @@ function InvoiceDocument({
             React.createElement(Text, { style: styles.sectionTitle }, "Billed To"),
             React.createElement(Text, { style: styles.companyName }, data.buyerName),
             React.createElement(Text, { style: styles.muted }, data.buyerEmail),
+            data.domain
+              ? React.createElement(
+                  Text,
+                  { style: { ...styles.muted, marginTop: 8 } },
+                  `Domain: ${data.domain}`,
+                )
+              : null,
             React.createElement(
               Text,
               { style: { ...styles.sectionTitle, marginTop: 16 } },
-              "Issued By",
+              "Reference",
             ),
-            React.createElement(Text, { style: styles.companyName }, "DevIt"),
+            React.createElement(Text, { style: styles.companyName }, referenceName),
             React.createElement(
               Text,
               { style: styles.muted },
-              `Learning platform access and payment support\n${supportEmail}\ndevit.in`,
+              isProject
+                ? "Project billing and service support"
+                : `Enrollment and payment support\n${supportEmail}`,
             ),
           ),
         ),
@@ -247,7 +284,11 @@ function InvoiceDocument({
       React.createElement(
         View,
         { style: styles.card },
-        React.createElement(Text, { style: styles.sectionTitle }, "Enrollment Details"),
+        React.createElement(
+          Text,
+          { style: styles.sectionTitle },
+          isProject ? "Project Line Items" : "Enrollment Details",
+        ),
         React.createElement(
           View,
           { style: styles.tableHeader },
@@ -259,7 +300,12 @@ function InvoiceDocument({
           React.createElement(
             Text,
             { style: [styles.tableHeaderText, styles.tableCellMid] },
-            "Duration",
+            "Qty",
+          ),
+          React.createElement(
+            Text,
+            { style: [styles.tableHeaderText, styles.tableCellMid] },
+            "Price",
           ),
           React.createElement(
             Text,
@@ -267,23 +313,30 @@ function InvoiceDocument({
             "Amount",
           ),
         ),
-        React.createElement(
-          View,
-          { style: styles.tableRow },
+        ...data.items.map((item) =>
           React.createElement(
-            Text,
-            { style: [styles.tableCell, styles.tableCellWide] },
-            data.courseTitle,
-          ),
-          React.createElement(
-            Text,
-            { style: [styles.tableCell, styles.tableCellMid] },
-            `${data.durationMonths} month${data.durationMonths > 1 ? "s" : ""}`,
-          ),
-          React.createElement(
-            Text,
-            { style: [styles.tableCell, styles.tableCellEnd] },
-            `Rs. ${subtotal.toFixed(2)}`,
+            View,
+            { style: styles.tableRow, key: `${item.name}-${item.description ?? ""}` },
+            React.createElement(
+              Text,
+              { style: [styles.tableCell, styles.tableCellWide] },
+              item.description ? `${item.name}\n${item.description}` : item.name,
+            ),
+            React.createElement(
+              Text,
+              { style: [styles.tableCell, styles.tableCellMid] },
+              item.quantity.toFixed(2).replace(/\.00$/, ""),
+            ),
+            React.createElement(
+              Text,
+              { style: [styles.tableCell, styles.tableCellMid] },
+              formatMoney(item.price),
+            ),
+            React.createElement(
+              Text,
+              { style: [styles.tableCell, styles.tableCellEnd] },
+              formatMoney(item.quantity * item.price),
+            ),
           ),
         ),
         React.createElement(
@@ -296,14 +349,24 @@ function InvoiceDocument({
               View,
               { style: styles.row },
               React.createElement(Text, { style: styles.rowLabel }, "Subtotal"),
-              React.createElement(Text, { style: styles.rowValue }, `Rs. ${subtotal.toFixed(2)}`),
+              React.createElement(Text, { style: styles.rowValue }, formatMoney(data.subtotal)),
             ),
-            React.createElement(
-              View,
-              { style: styles.row },
-              React.createElement(Text, { style: styles.rowLabel }, `GST (${data.gst}%)`),
-              React.createElement(Text, { style: styles.rowValue }, `Rs. ${gstAmount.toFixed(2)}`),
-            ),
+            data.gstPercent && data.gstAmount
+              ? React.createElement(
+                  View,
+                  { style: styles.row },
+                  React.createElement(
+                    Text,
+                    { style: styles.rowLabel },
+                    `GST (${data.gstPercent}%)`,
+                  ),
+                  React.createElement(
+                    Text,
+                    { style: styles.rowValue },
+                    formatMoney(data.gstAmount),
+                  ),
+                )
+              : null,
             data.orderId
               ? React.createElement(
                   View,
@@ -312,11 +375,23 @@ function InvoiceDocument({
                   React.createElement(Text, { style: styles.rowValue }, data.orderId),
                 )
               : null,
+            data.paymentId
+              ? React.createElement(
+                  View,
+                  { style: styles.row },
+                  React.createElement(Text, { style: styles.rowLabel }, "Payment Reference"),
+                  React.createElement(Text, { style: styles.rowValue }, data.paymentId),
+                )
+              : null,
             React.createElement(
               View,
               { style: styles.totalRow },
-              React.createElement(Text, { style: styles.totalText }, "Total Paid"),
-              React.createElement(Text, { style: styles.totalText }, `Rs. ${total.toFixed(2)}`),
+              React.createElement(
+                Text,
+                { style: styles.totalText },
+                data.status === "paid" ? "Total Paid" : "Total Due",
+              ),
+              React.createElement(Text, { style: styles.totalText }, formatMoney(data.total)),
             ),
           ),
         ),
@@ -327,7 +402,8 @@ function InvoiceDocument({
         React.createElement(
           Text,
           { style: styles.noteText },
-          `This document confirms successful payment for your DevIt enrollment. Keep it for your records. For billing or access support, contact ${supportEmail}.`,
+          data.notes?.trim() ||
+            `This is a computer-generated invoice issued by DevIt. For billing support, contact ${supportEmail}.`,
         ),
       ),
       React.createElement(
@@ -343,6 +419,6 @@ function InvoiceDocument({
   );
 }
 
-export async function generateInvoicePdf(data: InvoiceData): Promise<Buffer> {
+export async function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return renderToBuffer(InvoiceDocument({ data }));
 }

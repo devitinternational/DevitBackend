@@ -15,6 +15,7 @@ import publicRoutes from "./routes/public.routes";
 import enrollmentRoutes from "./routes/enrollment.routes";
 import submissionRoutes from "./routes/submission.routes";
 import certificateRoutes from "./routes/certificate.routes";
+import invoiceRoutes from "./routes/invoice.routes";
 
 export const createApp = (): Express => {
   const app = express();
@@ -73,6 +74,7 @@ export const createApp = (): Express => {
   app.use("/api/domains", domainRoutes);
 
   app.use("/api/payments", paymentRoutes);
+  app.use("/api/invoices", invoiceRoutes);
 
   app.use("/api/certificates", certificateRoutes);
 

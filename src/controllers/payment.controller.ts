@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { InvoiceStatus, InvoiceType } from "../../prisma/generated/prisma";
 import { Request, Response } from "express";
 import { AuthenticatedRequest } from "../middlewares/auth-middleware.js";
 import { prisma } from "../lib/prisma.js";
@@ -8,6 +9,13 @@ import { sendInvoiceEmail } from "../lib/invoice-email.js";
 import { isMailerConfigured } from "../lib/mailer.js";
 import { getPresignedDownloadUrl, uploadBuffer } from "../lib/storage.js";
 import { env } from "../config/env.js";
+import {
+  buildStudentInvoiceItems,
+  calculateInvoiceTotals,
+  nextInvoiceNumber,
+  sanitizeInvoiceTemplate,
+  toDecimal,
+} from "../lib/invoice-helpers.js";
 
 // POST /api/payments/order
 export async function createOrder(req: AuthenticatedRequest, res: Response) {
@@ -113,26 +121,40 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
       return;
     }
 
-    // 3. Generate invoice number
-    const invoiceCount = await prisma.invoice.count();
-    const invoiceNo = `DEVIT-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(5, "0")}`;
-
+    const existingInvoice = await prisma.invoice.findUnique({
+      where: { enrollmentId },
+      include: { items: true },
+    });
+    const invoiceNo =
+      existingInvoice?.invoiceNo ??
+      nextInvoiceNumber(new Date().getFullYear(), await prisma.invoice.count());
     const priceINR = Number(enrollment.domain.priceINR ?? 0);
-    const gstPercent = 18;
-    const gstAmount = parseFloat(((priceINR * gstPercent) / 100).toFixed(2));
-    const total = priceINR + gstAmount;
     const issuedAt = new Date();
+    const items = buildStudentInvoiceItems({
+      courseName: enrollment.domain.title,
+      amount: priceINR,
+      durationMonths: enrollment.durationMonths,
+    });
+    const totals = calculateInvoiceTotals(items);
 
     // 4. Generate PDF
     const pdfBuffer = await generateInvoicePdf({
       invoiceNo,
+      type: "student",
+      status: "paid",
       issuedAt,
+      dueDate: null,
       buyerName: enrollment.user.name ?? "Learner",
       buyerEmail: enrollment.user.email,
       courseTitle: enrollment.domain.title,
-      durationMonths: enrollment.durationMonths,
-      amountINR: priceINR,
-      gst: gstPercent,
+      projectName: null,
+      domain: enrollment.domain.title,
+      subtotal: totals.subtotal,
+      gstPercent: 0,
+      gstAmount: 0,
+      total: totals.total,
+      items,
+      notes: "Official payment invoice for your DevIt enrollment.",
       paymentId: razorpay_payment_id,
       orderId: razorpay_order_id,
       supportEmail: env.supportEmail,
@@ -148,23 +170,80 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
         where: { id: enrollmentId },
         data: { paymentStatus: "PAID", paymentRef: razorpay_payment_id },
       }),
-      prisma.invoice.create({
-        data: {
-          invoiceNo,
-          enrollmentId,
-          buyerName: enrollment.user.name ?? "Learner",
-          buyerEmail: enrollment.user.email,
-          courseTitle: enrollment.domain.title,
-          amountINR: priceINR,
-          gstPercent,
-          gstAmount,
-          total,
-          pdfUrl,
-          razorpayOrderId: razorpay_order_id,
-          razorpayPaymentId: razorpay_payment_id,
-          issuedAt,
-        },
-      }),
+      existingInvoice
+        ? prisma.invoice.update({
+            where: { id: existingInvoice.id },
+            data: {
+              type: InvoiceType.STUDENT,
+              status: InvoiceStatus.PAID,
+              buyerName: enrollment.user.name ?? "Learner",
+              buyerEmail: enrollment.user.email,
+              courseTitle: enrollment.domain.title,
+              projectName: null,
+              domain: enrollment.domain.title,
+              notes: existingInvoice.notes ?? "Official payment invoice for your DevIt enrollment.",
+              emailTemplate:
+                existingInvoice.emailTemplate ??
+                sanitizeInvoiceTemplate(undefined),
+              recipients:
+                existingInvoice.recipients.length > 0
+                  ? existingInvoice.recipients
+                  : [enrollment.user.email],
+              amountINR: toDecimal(totals.subtotal),
+              gstPercent: 0,
+              gstAmount: toDecimal(0),
+              total: toDecimal(totals.total),
+              pdfUrl,
+              razorpayOrderId: razorpay_order_id,
+              razorpayPaymentId: razorpay_payment_id,
+              issuedAt,
+              paidAt: issuedAt,
+              items: {
+                deleteMany: {},
+                create: items.map((item, index) => ({
+                  name: item.name,
+                  description: item.description ?? null,
+                  quantity: toDecimal(item.quantity),
+                  price: toDecimal(item.price),
+                  sortOrder: index,
+                })),
+              },
+            },
+          })
+        : prisma.invoice.create({
+            data: {
+              invoiceNo,
+              enrollmentId,
+              type: InvoiceType.STUDENT,
+              status: InvoiceStatus.PAID,
+              buyerName: enrollment.user.name ?? "Learner",
+              buyerEmail: enrollment.user.email,
+              courseTitle: enrollment.domain.title,
+              projectName: null,
+              domain: enrollment.domain.title,
+              notes: "Official payment invoice for your DevIt enrollment.",
+              emailTemplate: sanitizeInvoiceTemplate(undefined),
+              recipients: [enrollment.user.email],
+              amountINR: toDecimal(totals.subtotal),
+              gstPercent: 0,
+              gstAmount: toDecimal(0),
+              total: toDecimal(totals.total),
+              pdfUrl,
+              razorpayOrderId: razorpay_order_id,
+              razorpayPaymentId: razorpay_payment_id,
+              issuedAt,
+              paidAt: issuedAt,
+              items: {
+                create: items.map((item, index) => ({
+                  name: item.name,
+                  description: item.description ?? null,
+                  quantity: toDecimal(item.quantity),
+                  price: toDecimal(item.price),
+                  sortOrder: index,
+                })),
+              },
+            },
+          }),
     ]);
 
     let emailSent = false;
@@ -175,18 +254,25 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
       try {
         await sendInvoiceEmail({
           customerName: enrollment.user.name ?? "Learner",
-          customerEmail: enrollment.user.email,
-          courseName: enrollment.domain.title,
-          courseLink,
-          amount: total,
-          paymentId: razorpay_payment_id,
+          recipients: [enrollment.user.email],
           invoiceNo,
-          invoiceUrl: pdfUrl,
+          itemLabel: enrollment.domain.title,
+          total: totals.total,
+          issuedAt,
           pdfBuffer,
         });
         emailSent = true;
+
+        await prisma.invoice.update({
+          where: { enrollmentId },
+          data: { sentAt: new Date(), status: InvoiceStatus.PAID },
+        });
       } catch (emailErr) {
         console.error("invoice email error:", emailErr);
+        await prisma.invoice.update({
+          where: { enrollmentId },
+          data: { failedAt: new Date(), status: InvoiceStatus.FAILED },
+        });
       }
     } else {
       console.warn("Mailer not configured. Skipping invoice email delivery.");
@@ -274,10 +360,12 @@ export async function getInvoice(req: AuthenticatedRequest, res: Response) {
       return;
     }
 
-    if (
-      invoice.enrollment.userId !== req.user!.id &&
-      req.user!.role !== "ADMIN"
-    ) {
+    if (!invoice.enrollment) {
+      res.status(404).json({ success: false, message: "Enrollment not found" });
+      return;
+    }
+
+    if (invoice.enrollment.userId !== req.user!.id && req.user!.role !== "ADMIN") {
       res.status(403).json({ success: false, message: "Forbidden" });
       return;
     }
