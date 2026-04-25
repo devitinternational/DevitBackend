@@ -9,7 +9,7 @@ dist/
 .vscode/
 .idea/
 coverage/
-
+.npmrc
 /src/generated/prisma
 
 /prisma/generated/
