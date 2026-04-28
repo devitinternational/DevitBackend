@@ -1,0 +1,4 @@
+# Copy this file to .npmrc and set your token.
+# Generate a token at: GitHub → Settings → Developer settings → Personal access tokens
+# Required scopes: read:packages (to install), write:packages (to publish)
+//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN_HERE

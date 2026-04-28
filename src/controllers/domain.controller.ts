@@ -118,6 +118,7 @@ export const createDomain = async (
       res.status(409).json({ success: false, message: "Slug already exists" });
       return;
     }
+    console.error("createDomain error:", err);
     res
       .status(500)
       .json({ success: false, message: "Failed to create domain" });
