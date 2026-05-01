@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { jwtVerify } from "jose";
+import { prisma } from "../lib/prisma.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -40,11 +41,28 @@ export async function verifyToken(
       return;
     }
 
+    const dbUser = await prisma.user.findUnique({
+      where: { id: payload.id as string },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        name: true,
+      },
+    });
+
+    if (!dbUser) {
+      res.status(401).json({
+        error: "User not found for this session. Please sign in again.",
+      });
+      return;
+    }
+
     req.user = {
-      id: payload.id as string,
-      email: payload.email as string,
-      role: payload.role as string,
-      name: payload.name as string | undefined,
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      name: dbUser.name ?? undefined,
     };
 
     next();

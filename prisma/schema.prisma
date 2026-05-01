@@ -32,6 +32,7 @@ model User {
   incomes     Income[]     @relation("UserIncomes")
   createdInvoices Invoice[] @relation("CreatedInvoices")
   lessonProgress LessonProgress[]
+  createdBundles CourseBundle[] @relation("CreatedBundles")
 }
 
 enum Role {
@@ -107,6 +108,36 @@ model Domain {
   sections      Section[]
   tasks         Task[]
   enrollments   Enrollment[]
+  bundleCourses CourseBundleCourse[]
+}
+
+model CourseBundle {
+  id          String   @id @default(cuid())
+  title       String
+  description String?  @db.Text
+  startDate   DateTime
+  endDate     DateTime?
+  published   Boolean  @default(false)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdBy User                 @relation("CreatedBundles", fields: [createdById], references: [id])
+  courses   CourseBundleCourse[]
+
+  @@index([createdById, createdAt])
+}
+
+model CourseBundleCourse {
+  bundleId   String
+  domainId   String
+  createdAt  DateTime @default(now())
+
+  bundle CourseBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  domain Domain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@id([bundleId, domainId])
+  @@index([domainId])
 }
 
 /// Ordered groupings of lessons within a domain (e.g. "Week 1: HTML Basics")

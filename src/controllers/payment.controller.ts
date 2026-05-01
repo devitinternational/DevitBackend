@@ -17,6 +17,16 @@ import {
   toDecimal,
 } from "../lib/invoice-helpers.js";
 
+function isMissingInvoicesTableError(err: unknown) {
+  if (!err || typeof err !== "object" || !("code" in err)) return false;
+
+  const code = (err as { code?: string }).code;
+  const message =
+    "message" in err && typeof err.message === "string" ? err.message : "";
+
+  return code === "P2021" && message.includes("public.invoices");
+}
+
 // POST /api/payments/order
 export async function createOrder(req: AuthenticatedRequest, res: Response) {
   try {
@@ -33,11 +43,12 @@ export async function createOrder(req: AuthenticatedRequest, res: Response) {
       return;
     }
 
-    // Check not already enrolled
+    // Check existing enrollment state
     const existing = await prisma.enrollment.findUnique({
       where: { userId_domainId: { userId, domainId } },
     });
-    if (existing) {
+
+    if (existing?.paymentStatus === "PAID") {
       res.status(409).json({ success: false, message: "Already enrolled" });
       return;
     }
@@ -53,19 +64,32 @@ export async function createOrder(req: AuthenticatedRequest, res: Response) {
       notes: { userId, domainId, durationMonths: String(durationMonths) },
     });
 
-    // Create pending enrollment + payment record
-    const enrollment = await prisma.enrollment.create({
-      data: {
-        userId,
-        domainId,
-        durationMonths,
-        paymentStatus: domain.isFree ? "PAID" : "PENDING",
-        startDate: new Date(),
-        endDate: new Date(
-          Date.now() + durationMonths * 30 * 24 * 60 * 60 * 1000,
-        ),
-      },
-    });
+    const startDate = new Date();
+    const endDate = new Date(
+      Date.now() + durationMonths * 30 * 24 * 60 * 60 * 1000,
+    );
+
+    const enrollment = existing
+      ? await prisma.enrollment.update({
+          where: { id: existing.id },
+          data: {
+            durationMonths,
+            paymentStatus: domain.isFree ? "PAID" : "PENDING",
+            paymentRef: null,
+            startDate,
+            endDate,
+          },
+        })
+      : await prisma.enrollment.create({
+          data: {
+            userId,
+            domainId,
+            durationMonths,
+            paymentStatus: domain.isFree ? "PAID" : "PENDING",
+            startDate,
+            endDate,
+          },
+        });
 
     res.json({
       success: true,
@@ -121,136 +145,147 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
       return;
     }
 
-    const existingInvoice = await prisma.invoice.findUnique({
-      where: { enrollmentId },
-      include: { items: true },
-    });
-    const invoiceNo =
-      existingInvoice?.invoiceNo ??
-      nextInvoiceNumber(new Date().getFullYear(), await prisma.invoice.count());
     const priceINR = Number(enrollment.domain.priceINR ?? 0);
     const issuedAt = new Date();
+    const warnings: string[] = [];
     const items = buildStudentInvoiceItems({
       courseName: enrollment.domain.title,
       amount: priceINR,
       durationMonths: enrollment.durationMonths,
     });
     const totals = calculateInvoiceTotals(items);
+    let existingInvoice:
+      | Awaited<ReturnType<typeof prisma.invoice.findUnique>>
+      | null = null;
+    let invoiceNo: string | null = null;
+    let pdfBuffer: Buffer | null = null;
+    let pdfUrl: string | null = null;
+    let invoiceTableAvailable = true;
 
-    // 4. Generate PDF
-    const pdfBuffer = await generateInvoicePdf({
-      invoiceNo,
-      type: "student",
-      status: "paid",
-      issuedAt,
-      dueDate: null,
-      buyerName: enrollment.user.name ?? "Learner",
-      buyerEmail: enrollment.user.email,
-      courseTitle: enrollment.domain.title,
-      projectName: null,
-      domain: enrollment.domain.title,
-      subtotal: totals.subtotal,
-      gstPercent: 0,
-      gstAmount: 0,
-      total: totals.total,
-      items,
-      notes: "Official payment invoice for your DevIt enrollment.",
-      paymentId: razorpay_payment_id,
-      orderId: razorpay_order_id,
-      supportEmail: env.supportEmail,
+    try {
+      existingInvoice = await prisma.invoice.findUnique({
+        where: { enrollmentId },
+        include: { items: true },
+      });
+      invoiceNo =
+        existingInvoice?.invoiceNo ??
+        nextInvoiceNumber(new Date().getFullYear(), await prisma.invoice.count());
+
+      try {
+        pdfBuffer = await generateInvoicePdf({
+          invoiceNo,
+          type: "student",
+          status: "paid",
+          issuedAt,
+          dueDate: null,
+          buyerName: enrollment.user.name ?? "Learner",
+          buyerEmail: enrollment.user.email,
+          courseTitle: enrollment.domain.title,
+          projectName: null,
+          domain: enrollment.domain.title,
+          subtotal: totals.subtotal,
+          gstPercent: 0,
+          gstAmount: 0,
+          total: totals.total,
+          items,
+          notes: "Official payment invoice for your DevIt enrollment.",
+          paymentId: razorpay_payment_id,
+          orderId: razorpay_order_id,
+          supportEmail: env.supportEmail,
+        });
+
+        const pdfKey = `invoices/${invoiceNo}.pdf`;
+        pdfUrl = await uploadBuffer(pdfKey, pdfBuffer, "application/pdf");
+      } catch (invoiceAssetErr) {
+        console.error("verifyPayment invoice asset error:", invoiceAssetErr);
+        warnings.push("Invoice PDF could not be generated right now.");
+      }
+    } catch (invoiceErr) {
+      if (!isMissingInvoicesTableError(invoiceErr)) throw invoiceErr;
+
+      invoiceTableAvailable = false;
+      warnings.push(
+        "Invoice storage is not available in this environment, but your enrollment was activated."
+      );
+      console.warn(
+        "Invoices table is missing. verifyPayment will continue without creating invoice records."
+      );
+    }
+
+    await prisma.enrollment.update({
+      where: { id: enrollmentId },
+      data: { paymentStatus: "PAID", paymentRef: razorpay_payment_id },
     });
 
-    // 5. Upload PDF to R2
-    const pdfKey = `invoices/${invoiceNo}.pdf`;
-    const pdfUrl = await uploadBuffer(pdfKey, pdfBuffer, "application/pdf");
+    if (invoiceTableAvailable && invoiceNo) {
+      const invoiceData = {
+        type: InvoiceType.STUDENT,
+        status: InvoiceStatus.PAID,
+        buyerName: enrollment.user.name ?? "Learner",
+        buyerEmail: enrollment.user.email,
+        courseTitle: enrollment.domain.title,
+        projectName: null,
+        domain: enrollment.domain.title,
+        notes:
+          existingInvoice?.notes ??
+          "Official payment invoice for your DevIt enrollment.",
+        emailTemplate:
+          existingInvoice?.emailTemplate ?? sanitizeInvoiceTemplate(undefined),
+        recipients:
+          existingInvoice && existingInvoice.recipients.length > 0
+            ? existingInvoice.recipients
+            : [enrollment.user.email],
+        amountINR: toDecimal(totals.subtotal),
+        gstPercent: 0,
+        gstAmount: toDecimal(0),
+        total: toDecimal(totals.total),
+        pdfUrl,
+        razorpayOrderId: razorpay_order_id,
+        razorpayPaymentId: razorpay_payment_id,
+        issuedAt,
+        paidAt: issuedAt,
+      };
 
-    // 6. Update DB in transaction
-    await prisma.$transaction([
-      prisma.enrollment.update({
-        where: { id: enrollmentId },
-        data: { paymentStatus: "PAID", paymentRef: razorpay_payment_id },
-      }),
-      existingInvoice
-        ? prisma.invoice.update({
-            where: { id: existingInvoice.id },
-            data: {
-              type: InvoiceType.STUDENT,
-              status: InvoiceStatus.PAID,
-              buyerName: enrollment.user.name ?? "Learner",
-              buyerEmail: enrollment.user.email,
-              courseTitle: enrollment.domain.title,
-              projectName: null,
-              domain: enrollment.domain.title,
-              notes: existingInvoice.notes ?? "Official payment invoice for your DevIt enrollment.",
-              emailTemplate:
-                existingInvoice.emailTemplate ??
-                sanitizeInvoiceTemplate(undefined),
-              recipients:
-                existingInvoice.recipients.length > 0
-                  ? existingInvoice.recipients
-                  : [enrollment.user.email],
-              amountINR: toDecimal(totals.subtotal),
-              gstPercent: 0,
-              gstAmount: toDecimal(0),
-              total: toDecimal(totals.total),
-              pdfUrl,
-              razorpayOrderId: razorpay_order_id,
-              razorpayPaymentId: razorpay_payment_id,
-              issuedAt,
-              paidAt: issuedAt,
-              items: {
-                deleteMany: {},
-                create: items.map((item, index) => ({
-                  name: item.name,
-                  description: item.description ?? null,
-                  quantity: toDecimal(item.quantity),
-                  price: toDecimal(item.price),
-                  sortOrder: index,
-                })),
-              },
+      if (existingInvoice) {
+        await prisma.invoice.update({
+          where: { id: existingInvoice.id },
+          data: {
+            ...invoiceData,
+            items: {
+              deleteMany: {},
+              create: items.map((item, index) => ({
+                name: item.name,
+                description: item.description ?? null,
+                quantity: toDecimal(item.quantity),
+                price: toDecimal(item.price),
+                sortOrder: index,
+              })),
             },
-          })
-        : prisma.invoice.create({
-            data: {
-              invoiceNo,
-              enrollmentId,
-              type: InvoiceType.STUDENT,
-              status: InvoiceStatus.PAID,
-              buyerName: enrollment.user.name ?? "Learner",
-              buyerEmail: enrollment.user.email,
-              courseTitle: enrollment.domain.title,
-              projectName: null,
-              domain: enrollment.domain.title,
-              notes: "Official payment invoice for your DevIt enrollment.",
-              emailTemplate: sanitizeInvoiceTemplate(undefined),
-              recipients: [enrollment.user.email],
-              amountINR: toDecimal(totals.subtotal),
-              gstPercent: 0,
-              gstAmount: toDecimal(0),
-              total: toDecimal(totals.total),
-              pdfUrl,
-              razorpayOrderId: razorpay_order_id,
-              razorpayPaymentId: razorpay_payment_id,
-              issuedAt,
-              paidAt: issuedAt,
-              items: {
-                create: items.map((item, index) => ({
-                  name: item.name,
-                  description: item.description ?? null,
-                  quantity: toDecimal(item.quantity),
-                  price: toDecimal(item.price),
-                  sortOrder: index,
-                })),
-              },
+          },
+        });
+      } else {
+        await prisma.invoice.create({
+          data: {
+            invoiceNo,
+            enrollmentId,
+            ...invoiceData,
+            items: {
+              create: items.map((item, index) => ({
+                name: item.name,
+                description: item.description ?? null,
+                quantity: toDecimal(item.quantity),
+                price: toDecimal(item.price),
+                sortOrder: index,
+              })),
             },
-          }),
-    ]);
+          },
+        });
+      }
+    }
 
     let emailSent = false;
 
-    if (isMailerConfigured()) {
-      const courseLink = `${env.learningPlatformUrl.replace(/\/$/, "")}/dashboard`;
-
+    if (invoiceTableAvailable && invoiceNo && pdfBuffer && isMailerConfigured()) {
       try {
         await sendInvoiceEmail({
           customerName: enrollment.user.name ?? "Learner",
@@ -273,12 +308,16 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
           where: { enrollmentId },
           data: { failedAt: new Date(), status: InvoiceStatus.FAILED },
         });
+        warnings.push("Invoice email could not be sent right now.");
       }
+    } else if (!pdfBuffer) {
+      console.warn("Invoice PDF unavailable. Skipping invoice email delivery.");
     } else {
+      warnings.push("Invoice email is not configured in this environment.");
       console.warn("Mailer not configured. Skipping invoice email delivery.");
     }
 
-    res.json({ success: true, data: { invoiceNo, pdfUrl, emailSent } });
+    res.json({ success: true, data: { invoiceNo, pdfUrl, emailSent, warnings } });
   } catch (err: any) {
     if (err.code === "P2002") {
       res
@@ -286,7 +325,11 @@ export async function verifyPayment(req: AuthenticatedRequest, res: Response) {
         .json({ success: false, message: "Payment already verified" });
       return;
     }
-    throw err;
+    console.error("verifyPayment error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Payment was received, but verification processing failed.",
+    });
   }
 }
 
